@@ -1,0 +1,7 @@
+node_modules/
+.venv/
+.env
+npm-debug.log*
+frontend/dist/
+__pycache__/
+*.py[cod]
