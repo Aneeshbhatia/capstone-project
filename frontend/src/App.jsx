@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
@@ -75,6 +75,7 @@ function App() {
   const [service, setService] = useState('General service');
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState(null);
   const [connected, setConnected] = useState(false);
   const [notice, setNotice] = useState(null);
   const [ticketReceipt, setTicketReceipt] = useState(null);
@@ -103,6 +104,8 @@ function App() {
     counterId: '',
   });
   const [selectedSlot, setSelectedSlot] = useState(null);
+  const dashboardRequestId = useRef(0);
+  const recommendationRequestId = useRef(0);
 
   const serviceOptions = useMemo(() => {
     const configured = counters.flatMap((counter) => counter.services || []).filter(Boolean);
@@ -113,6 +116,7 @@ function App() {
   )), [counters, service]);
 
   const refresh = useCallback(async () => {
+    const requestId = ++dashboardRequestId.current;
     setRefreshing(true);
     try {
       const [nextCounters, nextBoard, nextAnalytics, nextAppointments] = await Promise.all([
@@ -121,31 +125,38 @@ function App() {
         request('/analytics'),
         request('/appointments?status=booked&limit=8'),
       ]);
+      if (requestId !== dashboardRequestId.current) return;
       setCounters(nextCounters);
       setBoard(nextBoard);
       setAnalytics(nextAnalytics);
       setAppointments(nextAppointments);
+      setLastUpdated(new Date());
       setNotice(null);
     } catch (error) {
-      setNotice({ type: 'error', text: error.message });
+      if (requestId === dashboardRequestId.current) {
+        setNotice({ type: 'error', text: error.message });
+      }
     } finally {
-      setRefreshing(false);
+      if (requestId === dashboardRequestId.current) setRefreshing(false);
     }
   }, []);
 
   const loadRecommendations = useCallback(async () => {
+    const requestId = ++recommendationRequestId.current;
     setRecommendationsLoading(true);
     setRecommendations([]);
     try {
       const rows = await request(`/recommendations?service=${encodeURIComponent(service)}&limit=5`);
+      if (requestId !== recommendationRequestId.current) return;
       setRecommendations(rows);
       setRecommendationError('');
     } catch (error) {
+      if (requestId !== recommendationRequestId.current) return;
       setRecommendationError(error.message);
       setNotice({ type: 'error', text: error.message });
       setRecommendations([]);
     } finally {
-      setRecommendationsLoading(false);
+      if (requestId === recommendationRequestId.current) setRecommendationsLoading(false);
     }
   }, [service]);
 
@@ -188,6 +199,7 @@ function App() {
   ]), [board]);
   const waitingCount = board.reduce((sum, group) => sum + group.waiting.length, 0);
   const servingCount = board.reduce((sum, group) => sum + group.serving.length, 0);
+  const activeCounterCount = counters.filter((counter) => counter.isActive).length;
   const noShowRate = analytics ? `${Math.round((analytics.noShowRate || 0) * 100)}%` : '—';
   const averageWait = recommendations[0]?.waitMinutes;
 
@@ -337,7 +349,9 @@ function App() {
   }
 
   const maxTraffic = Math.max(1, ...(analytics?.hourly || []).map((item) => item.tokens));
-  const dateLabel = new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date());
+  const now = new Date();
+  const dateLabel = new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric' }).format(now);
+  const greeting = now.getHours() < 12 ? 'Good morning' : now.getHours() < 17 ? 'Good afternoon' : 'Good evening';
 
   return (
     <div className="app-shell">
@@ -380,6 +394,7 @@ function App() {
           <div className="breadcrumb"><span>Workspace</span><span className="crumb-slash">/</span><strong>{activePage}</strong></div>
           <div className="topbar-right">
             <span className={`connection ${connected ? 'online' : ''}`}><i />{connected ? 'Live updates on' : 'Connecting'}</span>
+            {lastUpdated && <span className="last-updated">Updated {formatTime(lastUpdated)}</span>}
             <span className="topbar-date">{dateLabel}</span>
             <button className="icon-button" aria-label="Refresh dashboard" title={refreshing ? 'Refreshing dashboard' : 'Refresh dashboard'} disabled={refreshing} onClick={() => {
               refresh();
@@ -393,7 +408,7 @@ function App() {
             ? <section className="welcome-row">
               <div>
                 <div className="eyebrow"><span className="eyebrow-dot" /> SERVICE OPERATIONS</div>
-                <h1>Good morning<span className="title-comma">,</span> team</h1>
+                <h1>{greeting}<span className="title-comma">,</span> team</h1>
                 <p className="welcome-subtitle">Here’s what’s happening across your service counters today.</p>
               </div>
               <NavLink className="primary-button" to="/queue"><Icon name="plus" size={17} /> Issue a token</NavLink>
@@ -409,7 +424,7 @@ function App() {
           {notice && <div className={`toast ${notice.type}`} role="status"><span>{notice.type === 'success' ? <Icon name="check" size={17} /> : <Icon name="close" size={17} />}</span>{notice.text}<button onClick={() => setNotice(null)} aria-label="Dismiss notification"><Icon name="close" size={15} /></button></div>}
 
           {isOverview && <section className="stats-grid" aria-label="Queue summary">
-            <StatCard label="Waiting in queue" value={waitingCount} meta={`${counters.length} active counters`} icon="users" tone="blue" />
+            <StatCard label="Waiting in queue" value={waitingCount} meta={`${activeCounterCount} active counters`} icon="users" tone="blue" />
             <StatCard label="Currently serving" value={servingCount} meta="Across all counters" icon="queue" tone="violet" />
             <StatCard label="Recommended wait" value={averageWait == null ? '—' : `${averageWait} min`} meta={averageWait == null ? 'No wait data yet' : `For ${service}`} icon="clock" tone="amber" />
             <StatCard label="No-show rate" value={noShowRate} meta="Selected analytics period" icon="chart" tone="green" />
